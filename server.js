@@ -113,6 +113,74 @@ Return the JSON array now.`;
   }
 });
 
+/* 👇👇👇 COLE AQUI 👇👇👇 */
+
+// ===============================
+// AI: Sentences feedback (Step 7)
+// POST /ai/sentences-feedback
+// ===============================
+app.post("/ai/sentences-feedback", async (req, res) => {
+  try {
+    const { items, level } = req.body || {};
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "Missing 'items' (array)." });
+    }
+
+    const cleanItems = items
+      .map((it) => ({
+        word: String(it.word || "").trim(),
+        sentences: Array.isArray(it.sentences)
+          ? it.sentences.map((s) => String(s || "").trim())
+          : [],
+      }))
+      .filter(
+        (it) =>
+          it.word &&
+          it.sentences.length === 2 &&
+          it.sentences.every((s) => s.length > 0)
+      );
+
+    if (cleanItems.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "Each item must have a word and 2 sentences." });
+    }
+
+    const lvl = String(level || "B2");
+
+    const system = `
+You are an English teacher (level ${lvl}).
+Return ONLY valid JSON.
+`.trim();
+
+    const user = JSON.stringify({ items: cleanItems }, null, 2);
+
+    const completion = await openai.chat.completions.create({
+      model: MODEL,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    });
+
+    const content = completion.choices?.[0]?.message?.content || "";
+    const json = parseJsonSafely(content);
+
+    if (!json) {
+      return res.status(502).json({
+        error: "Model did not return valid JSON.",
+        raw: content,
+      });
+    }
+
+    res.json(json);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.post("/ai/resume-score", async (req, res) => {
   try {
     const {
