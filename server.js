@@ -150,19 +150,50 @@ app.post("/ai/sentences-feedback", async (req, res) => {
     const lvl = String(level || "B2");
 
     const system = `
-You are an English teacher (level ${lvl}).
-Return ONLY valid JSON.
+You are an English teacher for level ${lvl}.
+Return ONLY valid JSON (no markdown, no extra text).
+
+Required JSON schema:
+{
+  "results": [
+    {
+      "word": "string",
+      "sentences": [
+        {
+          "original": "string",
+          "corrected": "string",
+          "issues": ["string"],
+          "tips": ["string"]
+        },
+        {
+          "original": "string",
+          "corrected": "string",
+          "issues": ["string"],
+          "tips": ["string"]
+        }
+      ],
+      "overall_tips": ["string"]
+    }
+  ]
+}
 `.trim();
 
-    const user = JSON.stringify({ items: cleanItems }, null, 2);
+    const user = `
+Analyze these items. Each item has a word and exactly 2 sentences.
+Keep corrections natural and B2-friendly.
+Return the JSON now.
+
+Items:
+${JSON.stringify({ items: cleanItems }, null, 2)}
+`.trim();
 
     const completion = await openai.chat.completions.create({
       model: MODEL,
       temperature: 0.2,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: user },
-      ],
+        { role: "user", content: user }
+      ]
     });
 
     const content = completion.choices?.[0]?.message?.content || "";
@@ -170,14 +201,16 @@ Return ONLY valid JSON.
 
     if (!json) {
       return res.status(502).json({
-        error: "Model did not return valid JSON.",
-        raw: content,
+        error: "Model did not return valid JSON",
+        raw: content
       });
     }
 
     res.json(json);
+
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    console.error(err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
