@@ -12,24 +12,6 @@ const openai = new OpenAI({
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-// 🔍 DEBUG BOOT (TEMPORÁRIO)
-console.log("BOOT: openai SDK loaded");
-console.log(
-  "BOOT: has chat.completions?",
-  typeof openai.chat?.completions?.create
-);
-console.log("BOOT: MODEL =", process.env.OPENAI_MODEL);
-console.log(
-  "BOOT: KEY prefix =",
-  (process.env.OPENAI_API_KEY || "").slice(0, 8)
-);
-console.log(
-  "BOOT: KEY length =",
-  (process.env.OPENAI_API_KEY || "").length
-);
-// 🔍 DEBUG BOOT (TEMPORÁRIO)
-
-
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
