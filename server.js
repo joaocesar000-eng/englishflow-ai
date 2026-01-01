@@ -183,7 +183,7 @@ Required JSON schema:
 
     const user = `
 Analyze these items. Each item has a word and exactly 2 sentences.
-Keep corrections natural and B2-friendly.
+Keep corrections natural and ${lvl}-friendly.
 Return the JSON now.
 
 Items:
