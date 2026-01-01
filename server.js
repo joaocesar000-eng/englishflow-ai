@@ -1,9 +1,13 @@
+// server.js (ESM)
+
 import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
+
+// ✅ Cheerio (ESM): no default export
 import * as cheerio from "cheerio";
 
 const app = express();
@@ -16,26 +20,28 @@ const openai = new OpenAI({
 
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
+// ===============================
+// Health
+// ===============================
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// Helper: safe JSON parse from model output
+// ===============================
+// Helpers
+// ===============================
 function parseJsonSafely(text) {
   try {
     return JSON.parse(text);
-  } catch (e) {
+  } catch {
     return null;
   }
 }
 
-// -------------------------------
-// Conversation helpers (TED-Ed)
-// -------------------------------
 function normalizeLevel(level) {
-  const L = String(level || "B2").toUpperCase().trim();
+  const lvl = String(level || "B2").toUpperCase().trim();
   const allowed = new Set(["A1", "A2", "B1", "B2", "C1"]);
-  return allowed.has(L) ? L : "B2";
+  return allowed.has(lvl) ? lvl : "B2";
 }
 
 function levelSpec(lvl) {
@@ -86,109 +92,81 @@ Correct gently when needed.
   }
 }
 
-function isValidTedEdLessonUrl(urlStr) {
+// ✅ Basic SSRF protection: allow only TED-Ed host
+function isAllowedTedEdUrl(url) {
   try {
-    const u = new URL(urlStr);
-    return (
-      u.protocol === "https:" &&
-      u.hostname === "ed.ted.com" &&
-      u.pathname.startsWith("/lessons/")
-    );
+    const u = new URL(url);
+    // Allow only https and TED-Ed domain
+    if (u.protocol !== "https:") return false;
+    return u.hostname === "ed.ted.com";
   } catch {
     return false;
   }
 }
 
-/**
- * Fetches TED-Ed lesson page and extracts:
- * - title
- * - description
- * Uses meta og tags and some fallbacks.
- */
-async function fetchTedEdContext(lessonUrl) {
-  const url = String(lessonUrl || "").trim();
-
-  if (!url || !isValidTedEdLessonUrl(url)) {
-    return {
-      url,
-      title: "",
-      description: "",
-      extractedText: "",
-      ok: false,
-      reason: !url ? "missing_url" : "invalid_ted_ed_url",
-    };
-  }
-
+// ✅ Fetch with timeout (Node 18+ has AbortController)
+async function fetchWithTimeout(url, ms = 8000) {
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 12000);
-
+  const t = setTimeout(() => controller.abort(), ms);
   try {
-    const resp = await fetch(url, {
-      method: "GET",
-      headers: {
-        "User-Agent": "EnglishFlowBot/1.0",
-        Accept: "text/html",
-      },
+    const res = await fetch(url, {
       signal: controller.signal,
+      headers: {
+        // Helps some sites return full HTML
+        "User-Agent":
+          "Mozilla/5.0 (compatible; EnglishFlowBot/1.0; +https://englishflow-ai.onrender.com)",
+        Accept: "text/html,application/xhtml+xml",
+      },
     });
-
-    const html = await resp.text();
-    const $ = cheerio.load(html);
-
-    // Prefer meta tags
-    const ogTitle = $('meta[property="og:title"]').attr("content") || "";
-    const ogDesc = $('meta[property="og:description"]').attr("content") || "";
-
-    // Fallbacks
-    const h1 = $("h1").first().text().trim() || "";
-    const pageTitle = $("title").text().trim() || "";
-    const metaDesc = $('meta[name="description"]').attr("content") || "";
-
-    // Try JSON-LD (sometimes has clean data)
-    let ldTitle = "";
-    let ldDesc = "";
-    $('script[type="application/ld+json"]').each((_, el) => {
-      try {
-        const json = JSON.parse($(el).text());
-        if (!ldTitle && json?.name) ldTitle = String(json.name).trim();
-        if (!ldDesc && json?.description) ldDesc = String(json.description).trim();
-      } catch {}
-    });
-
-    const title = (ldTitle || ogTitle || h1 || pageTitle || "").trim();
-    const description = (ldDesc || ogDesc || metaDesc || "").trim();
-
-    const extractedText = [
-      title ? `Title: ${title}` : "",
-      description ? `Description: ${description}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    return {
-      url,
-      title,
-      description,
-      extractedText,
-      ok: true,
-    };
-  } catch (e) {
-    return {
-      url,
-      title: "",
-      description: "",
-      extractedText: "",
-      ok: false,
-      reason: "fetch_failed",
-    };
+    return res;
   } finally {
     clearTimeout(t);
   }
 }
 
-// -------------------------------
-// Existing endpoints
-// -------------------------------
+// ✅ Extract TED-Ed context (title + description + canonical + keywords if available)
+async function extractTedEdContext(tedUrl) {
+  if (!tedUrl || !isAllowedTedEdUrl(tedUrl)) {
+    return null;
+  }
+
+  const res = await fetchWithTimeout(tedUrl, 8000);
+  if (!res.ok) return null;
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  const title =
+    $("meta[property='og:title']").attr("content") ||
+    $("meta[name='twitter:title']").attr("content") ||
+    $("title").text() ||
+    "";
+
+  const description =
+    $("meta[property='og:description']").attr("content") ||
+    $("meta[name='description']").attr("content") ||
+    $("meta[name='twitter:description']").attr("content") ||
+    "";
+
+  const canonical =
+    $("link[rel='canonical']").attr("href") ||
+    $("meta[property='og:url']").attr("content") ||
+    tedUrl;
+
+  // TED-Ed sometimes has keywords; optional
+  const keywords = $("meta[name='keywords']").attr("content") || "";
+
+  return {
+    title: String(title || "").trim(),
+    description: String(description || "").trim(),
+    canonical: String(canonical || "").trim(),
+    keywords: String(keywords || "").trim(),
+  };
+}
+
+// ===============================
+// Step 2/4/9: Writing feedback
+// ===============================
 app.post("/ai/writing-feedback", async (req, res) => {
   try {
     const { text, level = "B2", stepName = "Writing" } = req.body || {};
@@ -196,7 +174,9 @@ app.post("/ai/writing-feedback", async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid 'text'." });
     }
 
-    const system = `You are an English tutor. Level: ${level}.
+    const lvl = normalizeLevel(level);
+
+    const system = `You are an English tutor. Level: ${lvl}.
 Return ONLY valid JSON with keys:
 corrected_text (string),
 key_issues (array of strings),
@@ -234,6 +214,9 @@ Return the JSON now.`;
   }
 });
 
+// ===============================
+// Step 6: Vocabulary
+// ===============================
 app.post("/ai/vocabulary", async (req, res) => {
   try {
     const { words, level = "B2" } = req.body || {};
@@ -241,7 +224,9 @@ app.post("/ai/vocabulary", async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid 'words' array." });
     }
 
-    const system = `You are an English vocabulary coach. Level: ${level}.
+    const lvl = normalizeLevel(level);
+
+    const system = `You are an English vocabulary coach. Level: ${lvl}.
 Return ONLY valid JSON: an array of items, each item with:
 word (string),
 definition (string),
@@ -278,7 +263,7 @@ Return the JSON array now.`;
 });
 
 // ===============================
-// AI: Sentences feedback (Step 7)
+// Step 7: Sentences feedback
 // POST /ai/sentences-feedback
 // ===============================
 app.post("/ai/sentences-feedback", async (req, res) => {
@@ -368,25 +353,45 @@ ${JSON.stringify({ items: cleanItems }, null, 2)}
       });
     }
 
-    res.json(json);
+    return res.json(json);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
+// ===============================
+// Step 10: Resume + Score
+// POST /ai/resume-score
+// ✅ Accepts BOTH payload formats:
+//   A) { level, drafts: [..], newWords: [], sentencesByWord: {} }  (iOS app)
+//   B) { level, writing1, writing2, writing100, newWords, sentencesByWord } (legacy)
+// ===============================
 app.post("/ai/resume-score", async (req, res) => {
   try {
-    const {
-      writing1 = "",
-      writing2 = "",
-      writing100 = "",
-      newWords = [],
-      sentencesByWord = {},
-      level = "B2",
-    } = req.body || {};
+    const body = req.body || {};
 
-    const system = `You are an English tutor and evaluator. Level: ${level}.
+    const lvl = normalizeLevel(body.level || "B2");
+
+    // Format A (preferred)
+    const drafts = Array.isArray(body.drafts) ? body.drafts : null;
+
+    // Format B (legacy)
+    const writing1 = String(body.writing1 ?? "");
+    const writing2 = String(body.writing2 ?? "");
+    const writing100 = String(body.writing100 ?? "");
+
+    const finalDrafts = drafts
+      ? drafts.map((d) => String(d || "")).filter((t) => t.trim().length > 0)
+      : [writing1, writing2, writing100].filter((t) => t.trim().length > 0);
+
+    const newWords = Array.isArray(body.newWords) ? body.newWords : [];
+    const sentencesByWord =
+      body.sentencesByWord && typeof body.sentencesByWord === "object"
+        ? body.sentencesByWord
+        : {};
+
+    const system = `You are an English tutor and evaluator. Level: ${lvl}.
 Return ONLY valid JSON with keys:
 summary (string),
 score_total (int 0-100),
@@ -394,9 +399,7 @@ breakdown (object with grammar, clarity, vocabulary, improvement; each 0-25),
 next_steps (array of strings).`;
 
     const user = `Student session data:
-- Draft 1: ${writing1}
-- Draft 2: ${writing2}
-- 100-word paragraph: ${writing100}
+- Drafts: ${JSON.stringify(finalDrafts)}
 - New words: ${JSON.stringify(newWords)}
 - Sentences by word: ${JSON.stringify(sentencesByWord)}
 
@@ -428,46 +431,33 @@ Return the JSON now.`;
 });
 
 // ===============================
-// AI: Conversation (Step 8)
+// Step 8: Conversation
 // POST /ai/conversation
-// Uses TED-Ed link context instead of resume
+// ✅ Uses TED-Ed context automatically if tedUrl is provided
+// Body: { level, vocabulary, messages, tedUrl?, topicResume? }
 // ===============================
 app.post("/ai/conversation", async (req, res) => {
   try {
-    const {
-      level,
-      videoUrl,     // preferred
-      tedUrl,       // optional alias
-      topicResume,  // kept for backward-compat, but not required now
-      vocabulary = [],
-      messages = []
-    } = req.body || {};
+    const { level, topicResume, vocabulary, messages, tedUrl } = req.body || {};
 
-    const lvl = normalizeLevel(level);
-
-    if (!Array.isArray(messages)) {
-      return res.status(400).json({ error: "Invalid 'messages' array." });
+    if (!level || !Array.isArray(messages)) {
+      return res.status(400).json({
+        error: "Missing required fields: level, messages",
+      });
     }
 
-    const lessonLink = String(videoUrl || tedUrl || "").trim();
-    const ted = await fetchTedEdContext(lessonLink);
+    const lvl = normalizeLevel(level);
+    const spec = levelSpec(lvl);
 
-    // Clean and unique vocabulary (case-insensitive)
-    const cleanedVocab = Array.isArray(vocabulary)
+    // ✅ Try TED-Ed context first (if tedUrl provided)
+    const tedContext = tedUrl ? await extractTedEdContext(String(tedUrl).trim()) : null;
+
+    const safeVocab = Array.isArray(vocabulary)
       ? vocabulary
           .map((w) => String(w || "").trim())
           .filter(Boolean)
+          .slice(0, 30)
       : [];
-
-    const seen = new Set();
-    const uniqueVocab = cleanedVocab.filter((w) => {
-      const k = w.toLowerCase();
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-
-    const spec = levelSpec(lvl);
 
     const systemPrompt = `
 You are an English conversation partner.
@@ -486,36 +476,37 @@ GLOBAL RULES (always):
 `.trim();
 
     const contextPrompt = `
-TED-Ed lesson link:
-${ted.url || "No link provided."}
+TED-Ed context:
+${
+  tedContext
+    ? `Title: ${tedContext.title || "Unknown"}
+Description: ${tedContext.description || "No description available"}
+URL: ${tedContext.canonical || tedUrl || ""}`
+    : `No TED-Ed context fetched (missing/invalid tedUrl or fetch failed).`
+}
 
-TED-Ed context (use this as the main reference):
-${ted.extractedText || "Could not extract TED-Ed content. Use the fallback summary below if available."}
-
-Fallback summary (if needed):
+Fallback topic summary (if any):
 ${String(topicResume || "").trim() || "No summary provided."}
 
 Key vocabulary:
-${uniqueVocab.length ? uniqueVocab.join(", ") : "(none)"}
+${safeVocab.join(", ")}
 
-If this is the first turn (no messages yet), start by asking ONE open question about the topic.
-Otherwise, continue the conversation naturally.
+If the user has no messages yet, start by asking ONE open question about the TED-Ed topic.
 `.trim();
 
-    // Normalize roles to "user" | "assistant"
-    const safeMessages = messages.map((m) => ({
-      role: String(m?.role || "").toLowerCase() === "assistant" ? "assistant" : "user",
-      content: String(m?.content || ""),
-    }));
+    const chatMessages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: contextPrompt },
+      ...messages.map((m) => ({
+        role: String(m.role || "").toLowerCase() === "assistant" ? "assistant" : "user",
+        content: String(m.content || ""),
+      })),
+    ];
 
     const completion = await openai.chat.completions.create({
-      model: MODEL, // ✅ consistent model
-      temperature: 0.6,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: contextPrompt },
-        ...safeMessages,
-      ],
+      model: MODEL,
+      temperature: 0.7,
+      messages: chatMessages,
     });
 
     const reply = completion.choices?.[0]?.message?.content?.trim() || "";
@@ -523,24 +514,21 @@ Otherwise, continue the conversation naturally.
       return res.status(502).json({ error: "Empty reply from model" });
     }
 
-    // Return reply + extracted TED info (useful for debugging / UI)
     return res.json({
       reply,
-      ted: {
-        url: ted.url,
-        title: ted.title,
-        description: ted.description,
-        ok: ted.ok,
-        reason: ted.reason,
-      },
+      // Optional debug fields (safe to remove later)
+      usedTedUrl: Boolean(tedContext),
+      tedTitle: tedContext?.title || null,
     });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: err?.message || "Conversation error" });
+    return res.status(500).send(err?.message || "Conversation error");
   }
 });
 
-// IMPORTANT: keep listen at the end (or after all routes)
+// ===============================
+// Listen (keep at bottom)
+// ===============================
 const port = process.env.PORT || 10000;
 app.listen(port, () => {
   console.log("Server running on", port);
