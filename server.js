@@ -276,49 +276,118 @@ app.listen(port, () => {
 
 app.post("/ai/conversation", async (req, res) => {
   try {
-    const { level, topicResume, vocabulary, messages } = req.body;
+    const { level, topicResume, vocabulary, messages } = req.body || {};
 
-    if (!level || !messages) {
-      return res.status(400).json({ error: "Missing required fields" });
+    if (!level || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "Missing required fields: level, messages" });
     }
+
+    const lvl = String(level || "B2").toUpperCase().trim();
+
+    function levelSpec(lvl) {
+      switch (lvl) {
+        case "A1":
+          return `
+Use very simple words and short sentences (5–8 words).
+Speak slowly. Use present tense mostly.
+Ask ONE question at a time.
+Avoid idioms, slang, and phrasal verbs.
+Give only minimal correction if needed (1 short fix).
+`;
+        case "A2":
+          return `
+Use simple vocabulary and short sentences (8–12 words).
+Use present and past simple.
+Ask ONE clear follow-up question.
+Give gentle corrections with a short example.
+Avoid complex idioms and advanced phrasal verbs.
+`;
+        case "B1":
+          return `
+Use everyday vocabulary and natural short paragraphs.
+Use present/past/future. Some common phrasal verbs are OK.
+Ask follow-up questions and encourage longer answers.
+Correct gently and explain briefly (1–2 lines).
+`;
+        case "B2":
+          return `
+Speak naturally and clearly with varied sentence structures.
+Use common idioms occasionally (not too many).
+Ask deeper follow-up questions and challenge the user a bit.
+Correct gently and give a better alternative phrasing.
+`;
+        case "C1":
+          return `
+Speak fluently with advanced vocabulary and nuanced phrasing.
+Use idioms and collocations naturally.
+Ask analytical questions, request justification and examples.
+Provide precise corrections and style improvements (concise).
+`;
+        default:
+          return `
+Speak naturally and clearly at B2 level.
+Ask follow-up questions.
+Correct gently when needed.
+`;
+      }
+    }
+
+    const spec = levelSpec(lvl);
 
     const systemPrompt = `
 You are an English conversation partner.
-Target level: ${level} (CEFR).
+Target level: ${lvl} (CEFR).
 
-Rules:
-- Keep language appropriate to the level.
+STYLE & LEVEL RULES:
+${spec}
+
+GLOBAL RULES (always):
 - Be friendly and encouraging.
-- Correct the user gently and briefly.
-- Always ask a follow-up question.
-- Stay on the TED-Ed topic when possible.
-`;
+- Keep focus on the TED-Ed topic when possible.
+- Use the provided vocabulary naturally when it fits (do not force).
+- Always ask a follow-up question at the end.
+- Corrections: keep them gentle, short, and helpful.
+- Never output JSON. Output plain conversational text only.
+`.trim();
 
     const contextPrompt = `
-Topic summary:
-${topicResume || "No summary provided."}
+Topic summary (TED-Ed):
+${(topicResume || "").trim() || "No summary provided."}
 
 Key vocabulary:
-${(vocabulary || []).join(", ")}
+${Array.isArray(vocabulary) ? vocabulary.join(", ") : ""}
 
-Start the conversation by asking ONE open question.
-`;
+If the user has no messages yet, start by asking ONE open question about the topic.
+`.trim();
+
+    // Safety: allow the backend to start the conversation if messages is empty
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    const hasUserMsgs = safeMessages.some(m => String(m.role).toLowerCase() === "user");
+
+    const chatMessages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: contextPrompt },
+      ...safeMessages.map(m => ({
+        role: String(m.role || "").toLowerCase() === "assistant" ? "assistant" : "user",
+        content: String(m.content || "")
+      }))
+    ];
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: contextPrompt },
-        ...messages
-      ],
-      temperature: 0.7
+      model: MODEL,              // ✅ use your MODEL env var consistently
+      temperature: 0.7,
+      messages: chatMessages
     });
 
-    const reply = completion.choices[0].message.content;
-    res.json({ reply });
+    const reply = completion.choices?.[0]?.message?.content?.trim() || "";
+    if (!reply) {
+      return res.status(502).json({ error: "Empty reply from model" });
+    }
+
+    return res.json({ reply });
 
   } catch (err) {
     console.error(err);
-    res.status(500).send(err.message || "Conversation error");
+    return res.status(500).send(err?.message || "Conversation error");
   }
 });
