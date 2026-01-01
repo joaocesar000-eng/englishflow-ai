@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
@@ -269,4 +272,53 @@ Return the JSON now.`;
 const port = process.env.PORT || 10000;
 app.listen(port, () => {
   console.log("Server running on", port);
+});
+
+app.post("/ai/conversation", async (req, res) => {
+  try {
+    const { level, topicResume, vocabulary, messages } = req.body;
+
+    if (!level || !messages) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const systemPrompt = `
+You are an English conversation partner.
+Target level: ${level} (CEFR).
+
+Rules:
+- Keep language appropriate to the level.
+- Be friendly and encouraging.
+- Correct the user gently and briefly.
+- Always ask a follow-up question.
+- Stay on the TED-Ed topic when possible.
+`;
+
+    const contextPrompt = `
+Topic summary:
+${topicResume || "No summary provided."}
+
+Key vocabulary:
+${(vocabulary || []).join(", ")}
+
+Start the conversation by asking ONE open question.
+`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: contextPrompt },
+        ...messages
+      ],
+      temperature: 0.7
+    });
+
+    const reply = completion.choices[0].message.content;
+    res.json({ reply });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send(err.message || "Conversation error");
+  }
 });
