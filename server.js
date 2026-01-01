@@ -4,7 +4,7 @@ dotenv.config();
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 
 const app = express();
 app.use(cors());
