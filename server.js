@@ -150,8 +150,8 @@ app.post("/ai/sentences-feedback", async (req, res) => {
         .json({ error: "Each item must have a word and 2 sentences." });
     }
 
-    const lvl = String(level || "B2");
-
+    const lvl = String(level || "B2").toUpperCase();
+    
     const system = `
 You are an English teacher for level ${lvl}.
 Return ONLY valid JSON (no markdown, no extra text).
