@@ -215,27 +215,85 @@ Return the JSON now.`;
 });
 
 // ===============================
-// Step 6: Vocabulary
+// Step 6: Vocabulary (+ native translations)
 // ===============================
 app.post("/ai/vocabulary", async (req, res) => {
   try {
-    const { words, level = "B2" } = req.body || {};
+    const {
+      words,
+      level = "B2",
+      // ✅ preferred: one language selected in Home (e.g. "pt-BR", "es", "de")
+      nativeLanguageCode,
+      // ✅ optional: allow multiple languages if you ever want
+      nativeLanguageCodes,
+    } = req.body || {};
+
     if (!Array.isArray(words) || words.length === 0) {
+      return res.status(400).json({ error: "Missing or invalid 'words' array." });
+    }
+
+    const cleanWords = words
+      .map((w) => String(w || "").trim())
+      .filter(Boolean);
+
+    if (cleanWords.length === 0) {
       return res.status(400).json({ error: "Missing or invalid 'words' array." });
     }
 
     const lvl = normalizeLevel(level);
 
-    const system = `You are an English vocabulary coach. Level: ${lvl}.
+    // ✅ Decide which native languages to return translations for
+    let langs = [];
+    if (Array.isArray(nativeLanguageCodes) && nativeLanguageCodes.length > 0) {
+      langs = nativeLanguageCodes.map((c) => String(c || "").trim()).filter(Boolean);
+    } else if (nativeLanguageCode && String(nativeLanguageCode).trim()) {
+      langs = [String(nativeLanguageCode).trim()];
+    }
+
+    // Normalize languages (defensive): keep stable keys and avoid duplicates
+    const seen = new Set();
+    langs = langs.filter((c) => {
+      const key = c.toLowerCase().replaceAll("_", "-");
+      if (!key) return false;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const translationsRule =
+      langs.length > 0
+        ? `
+Also include:
+translations (object) where keys are exactly: ${JSON.stringify(langs)}
+- Each value is a SHORT, natural translation of the WORD (not the definition).
+- If a translation is not possible, return "" (empty string).
+`
+        : `
+Also include:
+translations (object) as {} (empty) because no native language was provided.
+`;
+
+    const system = `
+You are an English vocabulary coach. Level: ${lvl}.
+
 Return ONLY valid JSON: an array of items, each item with:
 word (string),
 definition (string),
 synonyms (array of strings),
 examples (array of strings),
-collocations (array of strings).`;
+collocations (array of strings).
+${translationsRule}
 
-    const user = `Words: ${words.join(", ")}
-Return the JSON array now.`;
+STRICT RULES:
+- Return JSON only. No markdown, no extra text.
+- Keep definitions in English.
+- Synonyms/examples/collocations should be appropriate for level ${lvl}.
+`.trim();
+
+    const user = `
+Words: ${cleanWords.join(", ")}
+Return the JSON array now.
+`.trim();
 
     const completion = await openai.chat.completions.create({
       model: MODEL,
@@ -256,7 +314,15 @@ Return the JSON array now.`;
       });
     }
 
-    return res.json(json);
+    // ✅ Normalize output defensively: always ensure `translations` exists
+    const normalized = json.map((it) => {
+      const obj = typeof it === "object" && it ? it : {};
+      const translations =
+        obj.translations && typeof obj.translations === "object" ? obj.translations : {};
+      return { ...obj, translations };
+    });
+
+    return res.json(normalized);
   } catch (err) {
     return res.status(500).json({ error: String(err?.message || err) });
   }
